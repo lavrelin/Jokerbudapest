@@ -345,10 +345,12 @@ async def handle_text_form(update: Update, context: ContextTypes.DEFAULT_TYPE, d
         )
     
     elif data.startswith('txtf_'):
-        form_type = data.split('_')[1]
+        parts = data.split('_')
+        action = parts[1]
         
-        if form_type in ['catalog', 'post', 'admin', 'report', 'search']:
-            context.user_data['text_form_type'] = form_type
+        if action in ['catalog', 'post', 'admin', 'report', 'search']:
+            # Start form
+            context.user_data['text_form_type'] = action
             
             form_names = {
                 'catalog': 'Заявка в каталог',
@@ -359,9 +361,96 @@ async def handle_text_form(update: Update, context: ContextTypes.DEFAULT_TYPE, d
             }
             
             await query.message.reply_text(
-                f"📝 {form_names[form_type]}\n\n"
+                f"📝 {form_names[action]}\n\n"
                 "Напишите ваше сообщение и при необходимости прикрепите медиа:"
             )
+        
+        elif action == 'send':
+            # Send form to moderation
+            form_type = parts[2] if len(parts) > 2 else context.user_data.get('text_form_type')
+            
+            message_text = context.user_data.get('text_form_message', '')
+            media_type = context.user_data.get('text_form_media_type')
+            media_id = context.user_data.get('text_form_media_id')
+            
+            user = query.from_user
+            
+            form_names = {
+                'catalog': 'Заявка в каталог',
+                'post': 'Предложение публикации',
+                'admin': 'Связь с администратором',
+                'report': 'Жалоба на пользователя',
+                'search': 'Форма «Ищу»'
+            }
+            
+            # Create message for admin group
+            admin_text = f"📬 {form_names.get(form_type, 'Новая форма')}\n\n"
+            admin_text += f"От: {user.first_name}"
+            if user.username:
+                admin_text += f" (@{user.username})"
+            admin_text += f"\nID: {user.id}\n\n"
+            admin_text += message_text
+            
+            # Send to moderation group
+            try:
+                if media_type and media_id:
+                    if media_type == 'photo':
+                        await context.bot.send_photo(
+                            chat_id=config.MODERATION_GROUP_ID,
+                            photo=media_id,
+                            caption=admin_text
+                        )
+                    elif media_type == 'video':
+                        await context.bot.send_video(
+                            chat_id=config.MODERATION_GROUP_ID,
+                            video=media_id,
+                            caption=admin_text
+                        )
+                    elif media_type == 'document':
+                        await context.bot.send_document(
+                            chat_id=config.MODERATION_GROUP_ID,
+                            document=media_id,
+                            caption=admin_text
+                        )
+                else:
+                    await context.bot.send_message(
+                        chat_id=config.MODERATION_GROUP_ID,
+                        text=admin_text
+                    )
+                
+                # Set cooldown
+                from utils.helpers import set_cooldown
+                set_cooldown(user.id, 'text_command', config.COOLDOWN_TEXT_COMMAND)
+                
+                await query.edit_message_text(
+                    "✅ Ваша заявка отправлена администратору!\n"
+                    "Кулдаун: 8 часов до следующей заявки."
+                )
+                
+                # Clear context
+                context.user_data.pop('text_form_type', None)
+                context.user_data.pop('text_form_message', None)
+                context.user_data.pop('text_form_media_type', None)
+                context.user_data.pop('text_form_media_id', None)
+                
+            except Exception as e:
+                logger.error(f"Error sending form to moderation: {e}")
+                await query.answer("❌ Ошибка при отправке формы", show_alert=True)
+        
+        elif action == 'edit':
+            # Edit form
+            await query.message.reply_text(
+                "✏️ Отправьте новое сообщение для редактирования:"
+            )
+        
+        elif action == 'del':
+            # Delete form
+            context.user_data.pop('text_form_type', None)
+            context.user_data.pop('text_form_message', None)
+            context.user_data.pop('text_form_media_type', None)
+            context.user_data.pop('text_form_media_id', None)
+            
+            await query.edit_message_text("🗑 Форма удалена")
 
 
 async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
