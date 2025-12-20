@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Conversation states
 (WAITING_LINK, WAITING_CATEGORIES, WAITING_HASHTAGS, 
- WAITING_ADDRESS, WAITING_DESCRIPTION, WAITING_MEDIA) = range(6)
+ WAITING_ADDRESS, WAITING_DESCRIPTION, WAITING_MEDIA, WAITING_GROUP_SELECTION) = range(7)
 
 
 def is_admin(user_id: int) -> bool:
@@ -143,7 +143,8 @@ async def addhome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def addcard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /addcard command - select groups for card"""
     if not is_admin(update.effective_user.id):
-        return
+        await update.message.reply_text("❌ У вас нет доступа к этой команде")
+        return ConversationHandler.END
     
     context.user_data['new_card'] = {'groups': []}
     
@@ -153,6 +154,7 @@ async def addcard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎯 Выберите 1-3 группы для карточки:",
         reply_markup=keyboard
     )
+    return WAITING_GROUP_SELECTION
 
 
 async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
