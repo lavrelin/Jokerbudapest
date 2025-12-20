@@ -28,8 +28,11 @@ def is_admin(user_id: int) -> bool:
 
 async def addcatalog_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /addcatalog command - add card to group A"""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ У вас нет доступа к этой команде")
+    user_id = update.effective_user.id
+    logger.info(f"addcatalog command from user {user_id}, is_admin: {is_admin(user_id)}")
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(f"❌ У вас нет доступа к этой команде\n\nВаш ID: {user_id}\nАдмин IDs: {config.ADMIN_IDS}")
         return ConversationHandler.END
     
     context.user_data['new_card'] = {'groups': ['A']}
@@ -43,8 +46,12 @@ async def addcatalog_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def addpost_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /addpost command - add card to group B"""
-    if not is_admin(update.effective_user.id):
-        return
+    user_id = update.effective_user.id
+    logger.info(f"addpost command from user {user_id}, is_admin: {is_admin(user_id)}")
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(f"❌ У вас нет доступа к этой команде")
+        return ConversationHandler.END
     
     context.user_data['new_card'] = {'groups': ['B']}
     
@@ -57,8 +64,12 @@ async def addpost_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def addpeople_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /addpeople command - add card to group C"""
-    if not is_admin(update.effective_user.id):
-        return
+    user_id = update.effective_user.id
+    logger.info(f"addpeople command from user {user_id}, is_admin: {is_admin(user_id)}")
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(f"❌ У вас нет доступа к этой команде")
+        return ConversationHandler.END
     
     context.user_data['new_card'] = {'groups': ['C']}
     
@@ -71,8 +82,12 @@ async def addpeople_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def addpriority_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /addpriority command - add card to group D"""
-    if not is_admin(update.effective_user.id):
-        return
+    user_id = update.effective_user.id
+    logger.info(f"addpriority command from user {user_id}, is_admin: {is_admin(user_id)}")
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(f"❌ У вас нет доступа к этой команде")
+        return ConversationHandler.END
     
     context.user_data['new_card'] = {'groups': ['D']}
     
@@ -85,8 +100,12 @@ async def addpriority_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def addreklama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /addreklama command - add card to group E"""
-    if not is_admin(update.effective_user.id):
-        return
+    user_id = update.effective_user.id
+    logger.info(f"addreklama command from user {user_id}, is_admin: {is_admin(user_id)}")
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(f"❌ У вас нет доступа к этой команде")
+        return ConversationHandler.END
     
     context.user_data['new_card'] = {'groups': ['E']}
     
@@ -99,8 +118,12 @@ async def addreklama_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def add24_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /add24 command - add card to group F (24 hours)"""
-    if not is_admin(update.effective_user.id):
-        return
+    user_id = update.effective_user.id
+    logger.info(f"add24 command from user {user_id}, is_admin: {is_admin(user_id)}")
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(f"❌ У вас нет доступа к этой команде")
+        return ConversationHandler.END
     
     context.user_data['new_card'] = {'groups': ['F']}
     
@@ -114,8 +137,12 @@ async def add24_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def addwork_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /addwork command - add card to group G"""
-    if not is_admin(update.effective_user.id):
-        return
+    user_id = update.effective_user.id
+    logger.info(f"addwork command from user {user_id}, is_admin: {is_admin(user_id)}")
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(f"❌ У вас нет доступа к этой команде")
+        return ConversationHandler.END
     
     context.user_data['new_card'] = {'groups': ['G']}
     
@@ -128,8 +155,12 @@ async def addwork_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def addhome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /addhome command - add card to group H"""
-    if not is_admin(update.effective_user.id):
-        return
+    user_id = update.effective_user.id
+    logger.info(f"addhome command from user {user_id}, is_admin: {is_admin(user_id)}")
+    
+    if not is_admin(user_id):
+        await update.message.reply_text(f"❌ У вас нет доступа к этой команде")
+        return ConversationHandler.END
     
     context.user_data['new_card'] = {'groups': ['H']}
     
