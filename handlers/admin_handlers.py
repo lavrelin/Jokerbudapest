@@ -36,8 +36,8 @@ async def addcatalog_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     await update.message.reply_text(
         "📚 Добавление карточки в КАТАЛОГ (группа A)\n\n"
-        "Шаг 1/5: Отправьте ссылку на Telegram пост\n"
-        "Медиа будет импортировано автоматически!"
+        "Шаг 1/5: Отправьте ссылку на пост ИЛИ перешлите пост боту\n\n"
+        "💡 РЕКОМЕНДУЕТСЯ: Просто перешлите пост - это надежнее!"
     )
     return WAITING_LINK
 
@@ -52,7 +52,7 @@ async def addpost_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['new_card'] = {'groups': ['B']}
     await update.message.reply_text(
         "📰 Добавление карточки в ПОСТЫ (группа B)\n\n"
-        "Шаг 1/5: Отправьте ссылку на Telegram пост"
+        "Шаг 1/5: Отправьте ссылку ИЛИ перешлите пост боту\n\n💡 РЕКОМЕНДУЕТСЯ: Просто перешлите пост!"
     )
     return WAITING_LINK
 
@@ -67,7 +67,7 @@ async def addpeople_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['new_card'] = {'groups': ['C']}
     await update.message.reply_text(
         "👤 Добавление карточки в ЛЮДИ (группа C)\n\n"
-        "Шаг 1/5: Отправьте ссылку на Telegram пост"
+        "Шаг 1/5: Отправьте ссылку ИЛИ перешлите пост боту\n\n💡 РЕКОМЕНДУЕТСЯ: Просто перешлите пост!"
     )
     return WAITING_LINK
 
@@ -82,7 +82,7 @@ async def addpriority_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data['new_card'] = {'groups': ['D']}
     await update.message.reply_text(
         "⭐️ Добавление ПРИОРИТЕТНОЙ карточки (группа D)\n\n"
-        "Шаг 1/5: Отправьте ссылку на Telegram пост"
+        "Шаг 1/5: Отправьте ссылку ИЛИ перешлите пост боту\n\n💡 РЕКОМЕНДУЕТСЯ: Просто перешлите пост!"
     )
     return WAITING_LINK
 
@@ -97,7 +97,7 @@ async def addreklama_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['new_card'] = {'groups': ['E']}
     await update.message.reply_text(
         "📢 Добавление РЕКЛАМНОЙ карточки (группа E)\n\n"
-        "Шаг 1/5: Отправьте ссылку на Telegram пост"
+        "Шаг 1/5: Отправьте ссылку ИЛИ перешлите пост боту\n\n💡 РЕКОМЕНДУЕТСЯ: Просто перешлите пост!"
     )
     return WAITING_LINK
 
@@ -113,7 +113,7 @@ async def add24_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "⏰ Добавление карточки на 24 ЧАСА (группа F)\n"
         "⚠️ Автоудаление через 24 часа!\n\n"
-        "Шаг 1/5: Отправьте ссылку на Telegram пост"
+        "Шаг 1/5: Отправьте ссылку ИЛИ перешлите пост боту\n\n💡 РЕКОМЕНДУЕТСЯ: Просто перешлите пост!"
     )
     return WAITING_LINK
 
@@ -128,7 +128,7 @@ async def addwork_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['new_card'] = {'groups': ['G']}
     await update.message.reply_text(
         "💼 Добавление карточки в РАБОТА (группа G)\n\n"
-        "Шаг 1/5: Отправьте ссылку на Telegram пост"
+        "Шаг 1/5: Отправьте ссылку ИЛИ перешлите пост боту\n\n💡 РЕКОМЕНДУЕТСЯ: Просто перешлите пост!"
     )
     return WAITING_LINK
 
@@ -143,7 +143,7 @@ async def addhome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['new_card'] = {'groups': ['H']}
     await update.message.reply_text(
         "🏠 Добавление карточки в ДОМ (группа H)\n\n"
-        "Шаг 1/5: Отправьте ссылку на Telegram пост"
+        "Шаг 1/5: Отправьте ссылку ИЛИ перешлите пост боту\n\n💡 РЕКОМЕНДУЕТСЯ: Просто перешлите пост!"
     )
     return WAITING_LINK
 
@@ -151,25 +151,66 @@ async def addhome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============== ОБРАБОТЧИКИ ЭТАПОВ ==============
 
 async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive and parse Telegram link"""
-    link = update.message.text.strip()
+    """Receive and parse Telegram link OR forwarded message"""
+    message = update.message
     
-    await update.message.reply_text("⏳ Получаю медиа из поста...")
+    # Проверяем - это пересланное сообщение?
+    if message.forward_from or message.forward_from_chat or message.forward_origin:
+        logger.info("Received forwarded message, extracting media...")
+        
+        # Извлекаем медиа из пересланного сообщения
+        if message.photo:
+            media_type = 'photo'
+            media_file_id = message.photo[-1].file_id
+            caption = message.caption
+        elif message.video:
+            media_type = 'video'
+            media_file_id = message.video.file_id
+            caption = message.caption
+        elif message.document:
+            media_type = 'document'
+            media_file_id = message.document.file_id
+            caption = message.caption
+        else:
+            await message.reply_text(
+                "❌ Пересланное сообщение не содержит медиа (фото/видео/документ)\n\n"
+                "Перешлите сообщение с медиа или отправьте ссылку"
+            )
+            return WAITING_LINK
+        
+        # Сохраняем данные
+        context.user_data['new_card']['link'] = message.link or "forwarded"
+        context.user_data['new_card']['media_type'] = media_type
+        context.user_data['new_card']['media_file_id'] = media_file_id
+        
+        if caption:
+            context.user_data['new_card']['suggested_description'] = caption
+        
+        await message.reply_text(
+            f"✅ Медиа получено из пересланного сообщения: {media_type}\n\n"
+            "Шаг 2/5: Введите РАЙОН\n"
+            "Например: Будапешт 5, Центр, Pest, и т.д."
+        )
+        
+        return WAITING_DISTRICT
     
-    # Парсим ссылку и извлекаем медиа
+    # Если это обычный текст - пробуем как ссылку
+    link = message.text.strip()
+    
+    await message.reply_text("⏳ Проверяю ссылку...")
+    
+    # Парсим ссылку (но она вернет ошибку с инструкцией)
     result = await parse_telegram_link(context.bot, link)
     
     if result['error']:
-        await update.message.reply_text(
-            f"❌ Ошибка: {result['error']}\n\n"
-            "Отправьте правильную ссылку на пост или /cancel для отмены"
-        )
+        await message.reply_text(result['error'])
         return WAITING_LINK
     
+    # Этот код не достижим сейчас, но оставляем на будущее
     if not result['media_type']:
-        await update.message.reply_text(
-            "❌ Пост не содержит медиа (фото/видео/документ)\n\n"
-            "Отправьте ссылку на пост с медиа или /cancel для отмены"
+        await message.reply_text(
+            "❌ Не удалось получить медиа\n\n"
+            "Попробуйте ПЕРЕСЛАТЬ пост боту вместо ссылки"
         )
         return WAITING_LINK
     
@@ -178,11 +219,10 @@ async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['new_card']['media_type'] = result['media_type']
     context.user_data['new_card']['media_file_id'] = result['media_file_id']
     
-    # Если есть caption, предлагаем использовать как описание
     if result['caption']:
         context.user_data['new_card']['suggested_description'] = result['caption']
     
-    await update.message.reply_text(
+    await message.reply_text(
         f"✅ Медиа получено: {result['media_type']}\n\n"
         "Шаг 2/5: Введите РАЙОН\n"
         "Например: Будапешт 5, Центр, Pest, и т.д."
