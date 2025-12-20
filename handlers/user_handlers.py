@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
     user = update.effective_user
+    logger.info(f"Start command from user {user.id} (@{user.username})")
     get_or_create_user(user.id, user.username, user.first_name, user.last_name)
     
     welcome_text = (
@@ -154,22 +155,22 @@ async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE, que
         )
         return
     
-    # Limit to 5 cards (1-4 from search, 5th from groups D, E, F)
+    # Limit to 4 cards from search results
     search_results = cards[:4]
     
-    # Add one card from groups D, E, F as 5th
+    # Add one card from groups D, E, F as 5th (promotional)
     session = get_session()
     try:
-        promo_cards = session.query(Card).filter(
-            Card.groups.contains(['D']) | 
-            Card.groups.contains(['E']) | 
-            Card.groups.contains(['F'])
-        ).all()
+        all_promo_cards = session.query(Card).all()
+        promo_cards = [c for c in all_promo_cards if any(g in ['D', 'E', 'F'] for g in c.groups)]
         
         if promo_cards:
             import random
             promo_card = random.choice(promo_cards)
-            search_results.append(promo_card)
+            if promo_card not in search_results:
+                search_results.append(promo_card)
+    except Exception as e:
+        logger.error(f"Error getting promo cards: {e}")
     finally:
         session.close()
     
@@ -178,7 +179,7 @@ async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE, que
     context.user_data['current_card_index'] = 0
     
     await update.effective_message.reply_text(
-        f"Найдено карточек: {len(cards)}\n"
+        f"🔍 Найдено карточек: {len(cards)}\n"
         f"Показываю первые {len(search_results)} результатов:"
     )
     
