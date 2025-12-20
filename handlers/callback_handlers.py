@@ -12,7 +12,9 @@ from keyboards.keyboards import (
     get_text_form_keyboard, get_category_selection_keyboard, 
     get_group_selection_keyboard
 )
-from handlers.admin_handlers import publish_card
+from handlers.admin_handlers import (
+    publish_card, WAITING_CATEGORIES, WAITING_HASHTAGS, WAITING_LINK, WAITING_GROUP_SELECTION
+)
 from datetime import datetime
 import config
 
@@ -29,45 +31,55 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Navigation callbacks
     if data.startswith('nav_'):
         await handle_navigation(update, context, data)
+        return
     
     # Review callbacks
     elif data.startswith('rvw_'):
         await handle_reviews(update, context, data)
+        return
     
     # Rating callbacks
     elif data.startswith('rt_'):
         await handle_rating(update, context, data)
+        return
     
     # Subscription callbacks
     elif data.startswith('subs_') or data == 'my_subs':
         await handle_subscriptions(update, context, data)
+        return
     
     # Text form callbacks
     elif data.startswith('txtf_') or data == 'text_form':
         await handle_text_form(update, context, data)
+        return
     
-    # Category selection callbacks
+    # Category selection callbacks - ВАЖНО для ConversationHandler
     elif data.startswith('cat_'):
-        await handle_category_selection(update, context, data)
+        result = await handle_category_selection(update, context, data)
+        return result  # Возвращаем состояние для ConversationHandler
     
     # Group selection callbacks
     elif data.startswith('grp_'):
-        await handle_group_selection(update, context, data)
+        result = await handle_group_selection(update, context, data)
+        return result  # Возвращаем состояние для ConversationHandler
     
     # Admin callbacks
     elif data.startswith('adm_'):
         await handle_admin_callbacks(update, context, data)
+        return
     
     # Catalog application
     elif data == 'ctlg_app':
         await query.edit_message_caption(
             caption="📝 Для подачи заявки в каталог используйте команду /text"
         )
+        return
     
     # Show cards
     elif data == 'show_cards':
         from handlers.user_handlers import cards_command
         await cards_command(update, context)
+        return
     
     # Start search
     elif data == 'start_search':
@@ -75,6 +87,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔍 Введите поисковый запрос:\n\n"
             "Используйте: /search <запрос>"
         )
+        return
 
 
 async def handle_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
@@ -486,12 +499,14 @@ async def handle_category_selection(update: Update, context: ContextTypes.DEFAUL
         
         if not categories:
             await query.answer("Выберите хотя бы одну категорию", show_alert=True)
-            return
+            return WAITING_CATEGORIES
         
         await query.message.reply_text(
             f"✅ Выбрано категорий: {len(categories)}\n\n"
             "Шаг 3/6: Введите 1-3 хештега (через пробел):"
         )
+        
+        return WAITING_HASHTAGS
 
 
 async def handle_group_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
@@ -533,6 +548,8 @@ async def handle_group_selection(update: Update, context: ContextTypes.DEFAULT_T
             f"✅ Выбрано групп: {len(groups)}\n\n"
             "Шаг 1/6: Отправьте ссылку на оригинальный пост:"
         )
+        
+        return WAITING_LINK
 
 
 async def handle_admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
