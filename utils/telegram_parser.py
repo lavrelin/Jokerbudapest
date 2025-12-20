@@ -41,9 +41,7 @@ async def parse_telegram_link(bot: Bot, link: str):
                 "❌ Неверный формат ссылки.\n\n"
                 "Правильный формат:\n"
                 "https://t.me/название_канала/номер\n\n"
-                "Пример: https://t.me/mycha
-
-nnel/123"
+                "Пример: https://t.me/mychannel/123"
             )
             return result
         
