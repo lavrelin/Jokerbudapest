@@ -1,5 +1,6 @@
 """
 Парсинг медиа из Telegram ссылки
+ВНИМАНИЕ: Для работы парсинга бот должен быть добавлен в канал!
 """
 import re
 import logging
@@ -13,10 +14,8 @@ async def parse_telegram_link(bot: Bot, link: str):
     """
     Парсит Telegram ссылку и извлекает медиа
     
-    Поддерживаемые форматы:
-    - https://t.me/channel/123
-    - https://t.me/c/123456789/123
-    - @channel/123
+    ВАЖНО: Бот должен иметь доступ к каналу!
+    Добавьте бота в канал как администратора.
     
     Returns:
         dict: {
@@ -38,46 +37,68 @@ async def parse_telegram_link(bot: Bot, link: str):
         chat_id, message_id = extract_chat_and_message_id(link)
         
         if not chat_id or not message_id:
-            result['error'] = "Неверный формат ссылки"
+            result['error'] = (
+                "❌ Неверный формат ссылки.\n\n"
+                "Правильный формат:\n"
+                "https://t.me/название_канала/номер\n\n"
+                "Пример: https://t.me/mycha
+
+nnel/123"
+            )
             return result
         
         logger.info(f"Parsing link: chat_id={chat_id}, message_id={message_id}")
         
         # Пытаемся получить сообщение
         try:
-            # Для публичных каналов используем username
-            message = await bot.forward_message(
-                chat_id=chat_id,
+            # Пробуем получить сообщение через getChatMember
+            message = await bot.get_chat(chat_id)
+            
+            # Если канал найден, пробуем forwardMessage
+            forwarded = await bot.forward_message(
+                chat_id=chat_id,  
                 from_chat_id=chat_id,
                 message_id=message_id
             )
             
             # Извлекаем медиа
-            if message.photo:
+            if forwarded.photo:
                 result['media_type'] = 'photo'
-                result['media_file_id'] = message.photo[-1].file_id  # Берем самое большое фото
-            elif message.video:
+                result['media_file_id'] = forwarded.photo[-1].file_id
+            elif forwarded.video:
                 result['media_type'] = 'video'
-                result['media_file_id'] = message.video.file_id
-            elif message.document:
+                result['media_file_id'] = forwarded.video.file_id
+            elif forwarded.document:
                 result['media_type'] = 'document'
-                result['media_file_id'] = message.document.file_id
+                result['media_file_id'] = forwarded.document.file_id
             else:
-                result['error'] = "Сообщение не содержит медиа (фото/видео/документ)"
+                result['error'] = "Сообщение не содержит медиа"
             
             # Извлекаем caption
-            if message.caption:
-                result['caption'] = message.caption
-            elif message.text:
-                result['caption'] = message.text
+            if forwarded.caption:
+                result['caption'] = forwarded.caption
+            elif forwarded.text:
+                result['caption'] = forwarded.text
                 
         except TelegramError as e:
-            logger.error(f"Telegram error while fetching message: {e}")
-            result['error'] = f"Не удалось получить сообщение: {str(e)}"
+            error_msg = str(e).lower()
+            logger.error(f"Telegram error: {e}")
+            
+            # Понятное сообщение об ошибке
+            result['error'] = (
+                "❌ Не могу получить медиа из этой ссылки.\n\n"
+                "Возможные причины:\n"
+                "• Бот не добавлен в канал\n"
+                "• Канал приватный\n"
+                "• Сообщение удалено\n\n"
+                "✅ РЕШЕНИЕ:\n"
+                "Вместо ссылки отправьте медиа напрямую боту!\n"
+                "(Просто перешлите сообщение с фото/видео)"
+            )
             
     except Exception as e:
-        logger.error(f"Error parsing telegram link: {e}")
-        result['error'] = f"Ошибка парсинга: {str(e)}"
+        logger.error(f"Error parsing link: {e}")
+        result['error'] = f"Ошибка: {str(e)}"
     
     return result
 
@@ -90,7 +111,6 @@ def extract_chat_and_message_id(link: str):
     - https://t.me/channelname/123
     - https://t.me/c/1234567890/123
     - t.me/channelname/123
-    - @channelname/123
     
     Returns:
         tuple: (chat_id, message_id) или (None, None)
@@ -100,19 +120,12 @@ def extract_chat_and_message_id(link: str):
     # Формат: https://t.me/c/1234567890/123 (приватный канал)
     match = re.match(r'https?://t\.me/c/(\d+)/(\d+)', link)
     if match:
-        chat_id = f"-100{match.group(1)}"  # Приватные каналы начинаются с -100
+        chat_id = f"-100{match.group(1)}"
         message_id = int(match.group(2))
         return chat_id, message_id
     
-    # Формат: https://t.me/channelname/123 или t.me/channelname/123
+    # Формат: https://t.me/channelname/123
     match = re.match(r'(?:https?://)?t\.me/([a-zA-Z0-9_]+)/(\d+)', link)
-    if match:
-        chat_id = f"@{match.group(1)}"
-        message_id = int(match.group(2))
-        return chat_id, message_id
-    
-    # Формат: @channelname/123
-    match = re.match(r'@([a-zA-Z0-9_]+)/(\d+)', link)
     if match:
         chat_id = f"@{match.group(1)}"
         message_id = int(match.group(2))
@@ -125,17 +138,13 @@ async def get_media_from_link(bot: Bot, link: str):
     """
     Упрощенная функция для получения медиа из ссылки
     
-    Args:
-        bot: Telegram Bot instance
-        link: Ссылка на пост
-        
     Returns:
-        tuple: (media_type, media_file_id) или (None, None) если ошибка
+        tuple: (media_type, media_file_id) или (None, None)
     """
     result = await parse_telegram_link(bot, link)
     
     if result['error']:
-        logger.error(f"Error getting media: {result['error']}")
+        logger.error(f"Error: {result['error']}")
         return None, None
     
     return result['media_type'], result['media_file_id']
