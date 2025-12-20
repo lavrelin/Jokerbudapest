@@ -155,7 +155,7 @@ async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     
     # Проверяем - это пересланное сообщение?
-    if message.forward_from or message.forward_from_chat or message.forward_origin:
+    if message.forward_date or message.forward_from or message.forward_from_chat:
         logger.info("Received forwarded message, extracting media...")
         
         # Извлекаем медиа из пересланного сообщения
