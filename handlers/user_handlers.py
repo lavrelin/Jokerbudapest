@@ -1,17 +1,17 @@
+"""
+Обработчики пользовательских команд
+"""
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import ContextTypes
-from database.models import User, Card
+from database.models import Card
 from database.database import get_session
 from utils.helpers import (
-    get_or_create_user, get_cards_for_user, mark_card_as_viewed,
-    format_card_text, get_card_rating, get_card_reviews_count
+    get_or_create_user, get_cards_for_user, 
+    format_card_text, mark_card_as_viewed,
+    search_cards
 )
-from keyboards.keyboards import (
-    get_card_keyboard, get_pagination_keyboard, get_subscriptions_keyboard,
-    get_text_form_keyboard
-)
-import config
+from keyboards.keyboards import get_start_keyboard, get_card_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -20,524 +20,207 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
     user = update.effective_user
     logger.info(f"Start command from user {user.id} (@{user.username})")
-    get_or_create_user(user.id, user.username, user.first_name, user.last_name)
     
-    welcome_text = (
-        f"Привет, {user.first_name}! 👋\n\n"
-        "Добро пожаловать в BudapestJoker! 🃏\n\n"
-        "Я помогу вам найти полезные сервисы и контакты в Будапеште.\n\n"
-        "Используйте кнопки ниже для навигации или команды:\n"
-        "/cards - Показать карточки\n"
-        "/search - Поиск по каталогу\n"
-        "/text - Отправить заявку или сообщение\n"
-        "/myfollows - Мои подписки\n"
+    # Create or update user in database
+    get_or_create_user(
+        user_id=user.id,
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name
     )
     
-    keyboard = [
-        [InlineKeyboardButton("🃏 Показать карточки", callback_data="show_cards")],
-        [InlineKeyboardButton("🔍 Поиск", callback_data="start_search")],
-        [InlineKeyboardButton("📝 Отправить заявку", callback_data="text_form")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    welcome_text = (
+        f"Привет, 🃏 {user.first_name}! 👋\n\n"
+        f"Добро пожаловать в BudapestJoker! 🎭\n\n"
+        f"Я помогу вам найти полезные сервисы и контакты в Будапеште.\n\n"
+        f"Используйте кнопки ниже для навигации или команды:\n"
+        f"/cards - Показать карточки\n"
+        f"/search <запрос> - Поиск по каталогу\n"
+        f"/text - Отправить заявку"
+    )
     
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+    keyboard = get_start_keyboard()
+    
+    await update.message.reply_text(
+        welcome_text,
+        reply_markup=keyboard
+    )
 
 
 async def cards_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /cards command - show cards to user"""
-    user = update.effective_user
-    get_or_create_user(user.id, user.username, user.first_name, user.last_name)
+    """Handle /cards command - show cards"""
+    user_id = update.effective_user.id
     
     # Get cards for user
-    cards = get_cards_for_user(user.id, limit=config.CARDS_PER_PAGE)
+    cards = get_cards_for_user(user_id, limit=5)
     
     if not cards:
         await update.message.reply_text(
-            "К сожалению, карточки не найдены. 😔\n"
-            "Попробуйте позже или обновите страницу."
+            "😔 К сожалению, нет доступных карточек.\n"
+            "Попробуйте позже или используйте /search для поиска."
         )
         return
     
     # Store cards in context
     context.user_data['current_cards'] = [card.id for card in cards]
-    context.user_data['current_card_index'] = 0
+    context.user_data['current_index'] = 0
     
     # Show first card
-    await show_card(update, context, 0, cards)
+    await show_card(update, context, 0)
 
 
-async def show_card(update: Update, context: ContextTypes.DEFAULT_TYPE, index: int, cards: list):
-    """Show a specific card to user"""
-    if index < 0 or index >= len(cards):
+async def show_card(update: Update, context: ContextTypes.DEFAULT_TYPE, index: int):
+    """Show card at specified index"""
+    card_ids = context.user_data.get('current_cards', [])
+    
+    if not card_ids or index < 0 or index >= len(card_ids):
+        if update.message:
+            await update.message.reply_text("❌ Карточка не найдена")
         return
     
-    card = cards[index]
-    user = update.effective_user
+    card_id = card_ids[index]
     
-    # Mark card as viewed
-    mark_card_as_viewed(user.id, card.id)
-    
-    # Format card text
-    card_text = format_card_text(card)
-    
-    # Get keyboard
-    card_keyboard = get_card_keyboard(card, index)
-    pagination_keyboard = get_pagination_keyboard(index, len(cards), card.id)
-    
-    # Combine keyboards
-    combined_keyboard = card_keyboard.inline_keyboard + pagination_keyboard.inline_keyboard
-    reply_markup = InlineKeyboardMarkup(combined_keyboard)
-    
-    # Send card
-    if card.media_type and card.media_file_id:
+    session = get_session()
+    try:
+        card = session.query(Card).filter(Card.id == card_id).first()
+        if not card:
+            if update.message:
+                await update.message.reply_text("❌ Карточка не найдена")
+            return
+        
+        # Mark as viewed
+        mark_card_as_viewed(update.effective_user.id, card_id)
+        
+        # Format card text
+        text = format_card_text(card)
+        
+        # Get keyboard
+        keyboard = get_card_keyboard(card, index, len(card_ids))
+        
+        # Send with media
         try:
             if card.media_type == 'photo':
-                await update.effective_message.reply_photo(
-                    photo=card.media_file_id,
-                    caption=card_text,
-                    reply_markup=reply_markup
-                )
+                if update.message:
+                    await update.message.reply_photo(
+                        photo=card.media_file_id,
+                        caption=text,
+                        reply_markup=keyboard
+                    )
+                elif update.callback_query:
+                    await update.callback_query.message.reply_photo(
+                        photo=card.media_file_id,
+                        caption=text,
+                        reply_markup=keyboard
+                    )
             elif card.media_type == 'video':
-                await update.effective_message.reply_video(
-                    video=card.media_file_id,
-                    caption=card_text,
-                    reply_markup=reply_markup
-                )
+                if update.message:
+                    await update.message.reply_video(
+                        video=card.media_file_id,
+                        caption=text,
+                        reply_markup=keyboard
+                    )
+                elif update.callback_query:
+                    await update.callback_query.message.reply_video(
+                        video=card.media_file_id,
+                        caption=text,
+                        reply_markup=keyboard
+                    )
             elif card.media_type == 'document':
-                await update.effective_message.reply_document(
-                    document=card.media_file_id,
-                    caption=card_text,
-                    reply_markup=reply_markup
-                )
+                if update.message:
+                    await update.message.reply_document(
+                        document=card.media_file_id,
+                        caption=text,
+                        reply_markup=keyboard
+                    )
+                elif update.callback_query:
+                    await update.callback_query.message.reply_document(
+                        document=card.media_file_id,
+                        caption=text,
+                        reply_markup=keyboard
+                    )
+            else:
+                # No media - just text
+                if update.message:
+                    await update.message.reply_text(text, reply_markup=keyboard)
+                elif update.callback_query:
+                    await update.callback_query.message.reply_text(text, reply_markup=keyboard)
         except Exception as e:
-            logger.error(f"Error sending media: {e}")
-            await update.effective_message.reply_text(
-                card_text,
-                reply_markup=reply_markup
-            )
-    else:
-        await update.effective_message.reply_text(
-            card_text,
-            reply_markup=reply_markup
-        )
+            logger.error(f"Error sending card media: {e}")
+            # Fallback to text only
+            if update.message:
+                await update.message.reply_text(text, reply_markup=keyboard)
+            elif update.callback_query:
+                await update.callback_query.message.reply_text(text, reply_markup=keyboard)
+        
+        # Update current index
+        context.user_data['current_index'] = index
+        
+    finally:
+        session.close()
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /search command"""
-    user = update.effective_user
-    get_or_create_user(user.id, user.username, user.first_name, user.last_name)
-    
     # Check if query provided
-    if context.args:
-        query = ' '.join(context.args)
-        await perform_search(update, context, query)
-    else:
+    if not context.args:
         await update.message.reply_text(
-            "🔍 Введите поисковый запрос:\n\n"
-            "Используйте: /search <запрос>\n\n"
-            "Например:\n"
-            "/search барбер\n"
-            "/search маникюр центр"
-        )
-
-
-async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
-    """Perform search and show results"""
-    from utils.helpers import search_cards
-    
-    user = update.effective_user
-    cards = search_cards(query, user.id)
-    
-    if not cards:
-        await update.effective_message.reply_text(
-            f"По запросу '{query}' ничего не найдено. 😔\n"
-            "Попробуйте изменить запрос."
+            "🔍 Поиск по каталогу\n\n"
+            "Использование: /search <запрос>\n\n"
+            "Примеры:\n"
+            "• /search барбер\n"
+            "• /search будапешт\n"
+            "• /search массаж"
         )
         return
     
-    # Limit to 4 cards from search results
-    search_results = cards[:4]
+    query = ' '.join(context.args)
     
-    # Add one card from groups D, E, F as 5th (promotional)
-    session = get_session()
-    try:
-        all_promo_cards = session.query(Card).all()
-        promo_cards = [c for c in all_promo_cards if any(g in ['D', 'E', 'F'] for g in c.groups)]
-        
-        if promo_cards:
-            import random
-            promo_card = random.choice(promo_cards)
-            if promo_card not in search_results:
-                search_results.append(promo_card)
-    except Exception as e:
-        logger.error(f"Error getting promo cards: {e}")
-    finally:
-        session.close()
+    # Search
+    cards = search_cards(query, limit=10)
     
-    # Store in context
-    context.user_data['current_cards'] = [card.id for card in search_results]
-    context.user_data['current_card_index'] = 0
+    if not cards:
+        await update.message.reply_text(
+            f"😔 По запросу «{query}» ничего не найдено.\n\n"
+            "Попробуйте другой запрос или используйте /cards"
+        )
+        return
     
-    await update.effective_message.reply_text(
+    # Show results
+    await update.message.reply_text(
         f"🔍 Найдено карточек: {len(cards)}\n"
-        f"Показываю первые {len(search_results)} результатов:"
+        f"Запрос: «{query}»"
     )
     
-    # Show first card
-    await show_card(update, context, 0, search_results)
+    # Store in context and show first
+    context.user_data['current_cards'] = [card.id for card in cards]
+    context.user_data['current_index'] = 0
+    
+    await show_card(update, context, 0)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /help command"""
+    help_text = (
+        "📚 СПРАВКА\n\n"
+        "🃏 Основные команды:\n"
+        "/start - Главное меню\n"
+        "/cards - Показать карточки\n"
+        "/search <запрос> - Поиск\n"
+        "/text - Отправить заявку\n"
+        "/help - Эта справка\n\n"
+        "⭐️ Оценивайте карточки от 1 до 10!\n"
+        "🔍 Используйте поиск по району, категории или хештегам\n"
+        "📝 Отправляйте заявки для добавления в каталог"
+    )
+    
+    await update.message.reply_text(help_text)
 
 
 async def text_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /text command - open text form"""
-    user = update.effective_user
-    get_or_create_user(user.id, user.username, user.first_name, user.last_name)
-    
-    # Check cooldown
-    from utils.helpers import check_cooldown
-    from datetime import datetime
-    
-    cooldown_expires = check_cooldown(user.id, 'text_command')
-    if cooldown_expires:
-        time_left = cooldown_expires - datetime.utcnow()
-        hours = int(time_left.total_seconds() // 3600)
-        minutes = int((time_left.total_seconds() % 3600) // 60)
-        
-        await update.message.reply_text(
-            f"⏳ Вы можете отправить следующую форму через {hours}ч {minutes}мин"
-        )
-        return
-    
-    keyboard = get_text_form_keyboard()
+    """Handle /text command - submit application form"""
+    from keyboards.keyboards import get_text_form_keyboard
     
     await update.message.reply_text(
-        "📝 Выберите тип формы:\n\n"
-        "• Заявка в каталог - добавить свою карточку\n"
-        "• Предложение публикации - предложить контент\n"
-        "• Связь с администратором - задать вопрос\n"
-        "• Жалоба на пользователя - сообщить о нарушении\n"
-        "• Форма «Ищу» - найти что-то конкретное",
-        reply_markup=keyboard
+        "📝 Выберите тип заявки:",
+        reply_markup=get_text_form_keyboard()
     )
-
-
-async def myfollows_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /myfollows command - show user subscriptions"""
-    from database.models import CategorySubscription, CardSubscription
-    
-    user = update.effective_user
-    get_or_create_user(user.id, user.username, user.first_name, user.last_name)
-    
-    session = get_session()
-    try:
-        # Get category subscriptions
-        cat_subs = session.query(CategorySubscription).filter(
-            CategorySubscription.user_id == user.id
-        ).all()
-        
-        # Get card subscriptions
-        card_subs = session.query(CardSubscription).filter(
-            CardSubscription.user_id == user.id
-        ).all()
-        
-        text = "🔔 Ваши подписки:\n\n"
-        
-        if cat_subs:
-            text += "📂 Категории:\n"
-            for sub in cat_subs:
-                text += f"• {sub.category}\n"
-            text += "\n"
-        
-        if card_subs:
-            text += "🃏 Карточки:\n"
-            for sub in card_subs:
-                card = session.query(Card).filter(Card.id == sub.card_id).first()
-                if card:
-                    text += f"• Карточка #{card.card_number}\n"
-            text += "\n"
-        
-        if not cat_subs and not card_subs:
-            text += "У вас пока нет подписок.\n\n"
-        
-        text += "Используйте команды:\n"
-        text += "/follow - подписаться на категорию\n"
-        text += "/unfollow - отписаться от категории\n"
-        text += "/followid - подписаться на карточку"
-        
-        keyboard = get_subscriptions_keyboard()
-        
-        await update.message.reply_text(text, reply_markup=keyboard)
-        
-    finally:
-        session.close()
-
-
-async def follow_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /follow command - subscribe to category"""
-    await update.message.reply_text(
-        "📂 Подписка на категории\n\n"
-        "Используйте: /follow <категория>\n\n"
-        "Доступные категории:\n"
-        "• Барбер\n"
-        "• Косметолог\n"
-        "• Маникюр\n"
-        "• Врач\n"
-        "• Массажист\n"
-        "• И другие..."
-    )
-
-
-async def unfollow_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /unfollow command - unsubscribe from category"""
-    await update.message.reply_text(
-        "📂 Отписка от категории\n\n"
-        "Используйте: /unfollow <категория>\n\n"
-        "Или используйте /myfollows чтобы увидеть ваши подписки"
-    )
-
-
-async def vote_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /vote command - rate a card"""
-    if not context.args:
-        await update.message.reply_text(
-            "⭐️ Оценка карточки\n\n"
-            "Используйте: /vote <номер_карточки>\n\n"
-            "Например: /vote 1234"
-        )
-        return
-    
-    try:
-        card_number = int(context.args[0])
-        
-        session = get_session()
-        try:
-            card = session.query(Card).filter(Card.card_number == card_number).first()
-            
-            if not card:
-                await update.message.reply_text("Карточка не найдена. 😔")
-                return
-            
-            from keyboards.keyboards import get_rating_keyboard
-            keyboard = get_rating_keyboard(card.id)
-            
-            await update.message.reply_text(
-                f"⭐️ Оцените карточку #{card.card_number}\n\n"
-                "Выберите количество звёзд:",
-                reply_markup=keyboard
-            )
-        finally:
-            session.close()
-            
-    except ValueError:
-        await update.message.reply_text("Неверный номер карточки. Используйте число от 1 до 9999.")
-
-
-async def checkid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /checkid command - check card information"""
-    if not context.args:
-        await update.message.reply_text(
-            "ℹ️ Информация о карточке\n\n"
-            "Используйте: /checkid <номер_карточки>\n\n"
-            "Например: /checkid 1234"
-        )
-        return
-    
-    try:
-        card_number = int(context.args[0])
-        
-        session = get_session()
-        try:
-            card = session.query(Card).filter(Card.card_number == card_number).first()
-            
-            if not card:
-                await update.message.reply_text("Карточка не найдена. 😔")
-                return
-            
-            avg_rating, rating_count = get_card_rating(card.id)
-            review_count = get_card_reviews_count(card.id)
-            
-            text = f"ℹ️ Информация о карточке #{card.card_number}\n\n"
-            text += f"⭐️ Рейтинг: {avg_rating} ({rating_count} оценок)\n"
-            text += f"💬 Отзывы: {review_count}\n"
-            text += f"👁 Просмотры: {card.total_views} (уникальных: {card.unique_views})\n"
-            text += f"🔗 Переходы: {card.link_clicks}\n"
-            
-            await update.message.reply_text(text)
-        finally:
-            session.close()
-            
-    except ValueError:
-        await update.message.reply_text("Неверный номер карточки. Используйте число от 1 до 9999.")
-
-
-async def mycard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /mycard command - verify card ownership"""
-    from database.models import CardOwner
-    
-    if not context.args:
-        await update.message.reply_text(
-            "👤 Подтверждение владения карточкой\n\n"
-            "Используйте: /mycard <номер_карточки>\n\n"
-            "Например: /mycard 1234\n\n"
-            "После подтверждения вы сможете:\n"
-            "• Отвечать на комментарии без кулдауна\n"
-            "• Подавать заявку на изменения карточки раз в 12 часов"
-        )
-        return
-    
-    try:
-        card_number = int(context.args[0])
-        user = update.effective_user
-        
-        session = get_session()
-        try:
-            card = session.query(Card).filter(Card.card_number == card_number).first()
-            
-            if not card:
-                await update.message.reply_text("Карточка не найдена. 😔")
-                return
-            
-            # Check if already owner
-            existing = session.query(CardOwner).filter(
-                CardOwner.user_id == user.id,
-                CardOwner.card_id == card.id
-            ).first()
-            
-            if existing:
-                await update.message.reply_text(
-                    f"✅ Вы уже подтверждены как владелец карточки #{card_number}"
-                )
-                return
-            
-            # Add owner
-            owner = CardOwner(
-                user_id=user.id,
-                card_id=card.id
-            )
-            session.add(owner)
-            session.commit()
-            
-            await update.message.reply_text(
-                f"✅ Вы подтверждены как владелец карточки #{card_number}!\n\n"
-                "Теперь вы можете:\n"
-                "• Отвечать на комментарии без кулдауна\n"
-                "• Подавать заявку на изменения раз в 12 часов"
-            )
-        finally:
-            session.close()
-            
-    except ValueError:
-        await update.message.reply_text("Неверный номер карточки. Используйте число от 1 до 9999.")
-
-
-async def otzivid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /otzivid command - leave review for card"""
-    if not context.args:
-        await update.message.reply_text(
-            "💬 Оставить отзыв о карточке\n\n"
-            "Используйте: /otzivid <номер_карточки>\n\n"
-            "Например: /otzivid 1234"
-        )
-        return
-    
-    try:
-        card_number = int(context.args[0])
-        user = update.effective_user
-        
-        # Check cooldown (unless card owner)
-        from utils.helpers import is_card_owner
-        from datetime import datetime
-        
-        session = get_session()
-        try:
-            card = session.query(Card).filter(Card.card_number == card_number).first()
-            
-            if not card:
-                await update.message.reply_text("Карточка не найдена. 😔")
-                return
-            
-            # Check if card owner
-            is_owner = is_card_owner(user.id, card.id)
-            
-            if not is_owner:
-                cooldown_expires = check_cooldown(user.id, 'review')
-                
-                if cooldown_expires:
-                    time_left = cooldown_expires - datetime.utcnow()
-                    hours = int(time_left.total_seconds() // 3600)
-                    minutes = int((time_left.total_seconds() % 3600) // 60)
-                    
-                    await update.message.reply_text(
-                        f"⏳ Вы можете оставить следующий отзыв через {hours}ч {minutes}мин"
-                    )
-                    return
-            
-            # Store card ID for review
-            context.user_data['review_card_id'] = card.id
-            context.user_data['review_card_number'] = card_number
-            
-            await update.message.reply_text(
-                f"💬 Оставить отзыв о карточке #{card_number}\n\n"
-                "Напишите ваш отзыв:"
-            )
-        finally:
-            session.close()
-            
-    except ValueError:
-        await update.message.reply_text("Неверный номер карточки. Используйте число от 1 до 9999.")
-
-
-async def followid_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /followid command - subscribe to card notifications"""
-    from database.models import CardSubscription
-    
-    if not context.args:
-        await update.message.reply_text(
-            "🔔 Подписка на уведомления по карточке\n\n"
-            "Используйте: /followid <номер_карточки>\n\n"
-            "Например: /followid 1234\n\n"
-            "Вы будете получать уведомления о:\n"
-            "• Новых оценках\n"
-            "• Новых отзывах"
-        )
-        return
-    
-    try:
-        card_number = int(context.args[0])
-        user = update.effective_user
-        
-        session = get_session()
-        try:
-            card = session.query(Card).filter(Card.card_number == card_number).first()
-            
-            if not card:
-                await update.message.reply_text("Карточка не найдена. 😔")
-                return
-            
-            # Check if already subscribed
-            existing = session.query(CardSubscription).filter(
-                CardSubscription.user_id == user.id,
-                CardSubscription.card_id == card.id
-            ).first()
-            
-            if existing:
-                await update.message.reply_text(
-                    f"✅ Вы уже подписаны на карточку #{card_number}"
-                )
-                return
-            
-            # Add subscription
-            subscription = CardSubscription(
-                user_id=user.id,
-                card_id=card.id
-            )
-            session.add(subscription)
-            session.commit()
-            
-            await update.message.reply_text(
-                f"✅ Вы подписались на уведомления о карточке #{card_number}!"
-            )
-        finally:
-            session.close()
-            
-    except ValueError:
-        await update.message.reply_text("Неверный номер карточки. Используйте число от 1 до 9999.")
