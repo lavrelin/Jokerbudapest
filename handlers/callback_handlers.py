@@ -1,742 +1,578 @@
 import logging
-from datetime import datetime, timedelta
 from telegram import Update
-from telegram.ext import ContextTypes, ConversationHandler
-from database.models import Card, User, Review, Cooldown
+from telegram.ext import ContextTypes
+from database.models import Card, Rating, Review, CategorySubscription, CardSubscription
 from database.database import get_session
 from utils.helpers import (
-    generate_unique_card_number, get_card_rating, 
-    get_card_reviews_count, remove_cooldown
+    get_cards_for_user, format_card_text, set_cooldown,
+    check_cooldown, get_card_rating
 )
 from keyboards.keyboards import (
-    get_add_card_type_keyboard, get_admin_card_preview_keyboard,
-    get_category_selection_keyboard, get_group_selection_keyboard
+    get_review_keyboard, get_rating_keyboard, get_subscriptions_keyboard,
+    get_text_form_keyboard, get_category_selection_keyboard, 
+    get_group_selection_keyboard
 )
+from handlers.admin_handlers import (
+    publish_card, WAITING_CATEGORIES, WAITING_HASHTAGS, WAITING_LINK, WAITING_GROUP_SELECTION
+)
+from datetime import datetime
 import config
 
 logger = logging.getLogger(__name__)
 
-# Conversation states
-(WAITING_LINK, WAITING_CATEGORIES, WAITING_HASHTAGS, 
- WAITING_ADDRESS, WAITING_DESCRIPTION, WAITING_MEDIA, WAITING_GROUP_SELECTION) = range(7)
 
-
-def is_admin(user_id: int) -> bool:
-    """Check if user is admin"""
-    return user_id in config.ADMIN_IDS
-
-
-async def addcatalog_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /addcatalog command - add card to group A"""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ У вас нет доступа к этой команде")
-        return ConversationHandler.END
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Main callback handler"""
+    query = update.callback_query
+    await query.answer()
     
-    context.user_data['new_card'] = {'groups': ['A']}
+    data = query.data
     
-    await update.message.reply_text(
-        "📚 Добавление карточки в Каталог (группа A)\n\n"
-        "Шаг 1/6: Отправьте ссылку на оригинальный пост:"
-    )
-    return WAITING_LINK
-
-
-async def addpost_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /addpost command - add card to group B"""
-    if not is_admin(update.effective_user.id):
+    # Navigation callbacks
+    if data.startswith('nav_'):
+        await handle_navigation(update, context, data)
         return
     
-    context.user_data['new_card'] = {'groups': ['B']}
-    
-    await update.message.reply_text(
-        "📰 Добавление карточки в Посты (группа B)\n\n"
-        "Шаг 1/6: Отправьте ссылку на оригинальный пост:"
-    )
-    return WAITING_LINK
-
-
-async def addpeople_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /addpeople command - add card to group C"""
-    if not is_admin(update.effective_user.id):
+    # Review callbacks
+    elif data.startswith('rvw_'):
+        await handle_reviews(update, context, data)
         return
     
-    context.user_data['new_card'] = {'groups': ['C']}
-    
-    await update.message.reply_text(
-        "👤 Добавление карточки в Люди (группа C)\n\n"
-        "Шаг 1/6: Отправьте ссылку на оригинальный пост:"
-    )
-    return WAITING_LINK
-
-
-async def addpriority_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /addpriority command - add card to group D"""
-    if not is_admin(update.effective_user.id):
+    # Rating callbacks
+    elif data.startswith('rt_'):
+        await handle_rating(update, context, data)
         return
     
-    context.user_data['new_card'] = {'groups': ['D']}
-    
-    await update.message.reply_text(
-        "⭐️ Добавление приоритетной карточки (группа D)\n\n"
-        "Шаг 1/6: Отправьте ссылку на оригинальный пост:"
-    )
-    return WAITING_LINK
-
-
-async def addreklama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /addreklama command - add card to group E"""
-    if not is_admin(update.effective_user.id):
+    # Subscription callbacks
+    elif data.startswith('subs_') or data == 'my_subs':
+        await handle_subscriptions(update, context, data)
         return
     
-    context.user_data['new_card'] = {'groups': ['E']}
-    
-    await update.message.reply_text(
-        "📢 Добавление рекламной карточки (группа E)\n\n"
-        "Шаг 1/6: Отправьте ссылку на оригинальный пост:"
-    )
-    return WAITING_LINK
-
-
-async def add24_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /add24 command - add card to group F (24 hours)"""
-    if not is_admin(update.effective_user.id):
+    # Text form callbacks
+    elif data.startswith('txtf_') or data == 'text_form':
+        await handle_text_form(update, context, data)
         return
     
-    context.user_data['new_card'] = {'groups': ['F']}
+    # Category selection callbacks - ВАЖНО для ConversationHandler
+    elif data.startswith('cat_'):
+        result = await handle_category_selection(update, context, data)
+        return result  # Возвращаем состояние для ConversationHandler
     
-    await update.message.reply_text(
-        "⏰ Добавление карточки на 24 часа (группа F)\n\n"
-        "Карточка будет автоматически удалена через 24 часа.\n\n"
-        "Шаг 1/6: Отправьте ссылку на оригинальный пост:"
-    )
-    return WAITING_LINK
-
-
-async def addwork_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /addwork command - add card to group G"""
-    if not is_admin(update.effective_user.id):
+    # Group selection callbacks
+    elif data.startswith('grp_'):
+        result = await handle_group_selection(update, context, data)
+        return result  # Возвращаем состояние для ConversationHandler
+    
+    # Admin callbacks
+    elif data.startswith('adm_'):
+        await handle_admin_callbacks(update, context, data)
         return
     
-    context.user_data['new_card'] = {'groups': ['G']}
-    
-    await update.message.reply_text(
-        "💼 Добавление карточки в Работа (группа G)\n\n"
-        "Шаг 1/6: Отправьте ссылку на оригинальный пост:"
-    )
-    return WAITING_LINK
-
-
-async def addhome_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /addhome command - add card to group H"""
-    if not is_admin(update.effective_user.id):
-        return
-    
-    context.user_data['new_card'] = {'groups': ['H']}
-    
-    await update.message.reply_text(
-        "🏠 Добавление карточки в Дом (группа H)\n\n"
-        "Шаг 1/6: Отправьте ссылку на оригинальный пост:"
-    )
-    return WAITING_LINK
-
-
-async def addcard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /addcard command - select groups for card"""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ У вас нет доступа к этой команде")
-        return ConversationHandler.END
-    
-    context.user_data['new_card'] = {'groups': []}
-    
-    keyboard = get_group_selection_keyboard()
-    
-    await update.message.reply_text(
-        "🎯 Выберите 1-3 группы для карточки:",
-        reply_markup=keyboard
-    )
-    return WAITING_GROUP_SELECTION
-
-
-async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive original link"""
-    link = update.message.text
-    context.user_data['new_card']['original_link'] = link
-    
-    keyboard = get_category_selection_keyboard()
-    
-    await update.message.reply_text(
-        "Шаг 2/6: Выберите 1-3 категории:",
-        reply_markup=keyboard
-    )
-    return WAITING_CATEGORIES
-
-
-async def receive_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive categories (handled by callback)"""
-    # This will be handled by callback handler
-    pass
-
-
-async def receive_hashtags(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive hashtags"""
-    hashtags = update.message.text
-    hashtag_list = [tag.strip('#').strip() for tag in hashtags.split() if tag.strip()]
-    
-    if len(hashtag_list) > 3:
-        await update.message.reply_text(
-            "⚠️ Максимум 3 хештега. Пожалуйста, введите снова:"
+    # Catalog application
+    elif data == 'ctlg_app':
+        await query.edit_message_caption(
+            caption="📝 Для подачи заявки в каталог используйте команду /text"
         )
-        return WAITING_HASHTAGS
+        return
     
-    context.user_data['new_card']['hashtags'] = hashtag_list
+    # Show cards
+    elif data == 'show_cards':
+        from handlers.user_handlers import cards_command
+        await cards_command(update, context)
+        return
     
-    await update.message.reply_text(
-        "Шаг 4/6: Введите адрес или локацию (или отправьте '-' чтобы пропустить):"
-    )
-    return WAITING_ADDRESS
-
-
-async def receive_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive address"""
-    address = update.message.text
-    
-    if address != '-':
-        context.user_data['new_card']['address'] = address
-    
-    await update.message.reply_text(
-        "Шаг 5/6: Введите краткое описание для карточки:"
-    )
-    return WAITING_DESCRIPTION
-
-
-async def receive_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive description"""
-    description = update.message.text
-    context.user_data['new_card']['description'] = description
-    
-    await update.message.reply_text(
-        "Шаг 6/6: Отправьте медиа (фото, видео или документ):"
-    )
-    return WAITING_MEDIA
-
-
-async def receive_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive media and create card preview"""
-    new_card = context.user_data.get('new_card', {})
-    
-    # Get media
-    if update.message.photo:
-        media_type = 'photo'
-        media_file_id = update.message.photo[-1].file_id
-    elif update.message.video:
-        media_type = 'video'
-        media_file_id = update.message.video.file_id
-    elif update.message.document:
-        media_type = 'document'
-        media_file_id = update.message.document.file_id
-    else:
-        await update.message.reply_text(
-            "⚠️ Неподдерживаемый тип медиа. Отправьте фото, видео или документ."
+    # Start search
+    elif data == 'start_search':
+        await query.message.reply_text(
+            "🔍 Введите поисковый запрос:\n\n"
+            "Используйте: /search <запрос>"
         )
-        return WAITING_MEDIA
-    
-    new_card['media_type'] = media_type
-    new_card['media_file_id'] = media_file_id
-    
-    # Generate temporary ID for preview
-    import uuid
-    temp_id = str(uuid.uuid4())
-    context.user_data['temp_card_id'] = temp_id
-    context.user_data['new_card'] = new_card
-    
-    # Show preview
-    await show_card_preview(update, context, new_card, temp_id)
-    
-    return ConversationHandler.END
+        return
 
 
-async def show_card_preview(update: Update, context: ContextTypes.DEFAULT_TYPE, card_data: dict, temp_id: str):
-    """Show card preview to admin"""
-    text = "📋 Предпросмотр карточки:\n\n"
-    text += f"Группы: {', '.join(card_data.get('groups', []))}\n"
-    text += f"Категории: {', '.join(card_data.get('categories', []))}\n"
+async def handle_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Handle navigation callbacks"""
+    query = update.callback_query
     
-    if card_data.get('hashtags'):
-        text += f"Хештеги: {' '.join(['#' + tag for tag in card_data['hashtags']])}\n"
-    
-    if card_data.get('address'):
-        text += f"Адрес: {card_data['address']}\n"
-    
-    text += f"\n{card_data.get('description', '')}\n"
-    text += f"\nСсылка: {card_data.get('original_link', 'Не указана')}"
-    
-    keyboard = get_admin_card_preview_keyboard(temp_id)
-    
-    # Send with media
-    if card_data.get('media_type') == 'photo':
-        await update.message.reply_photo(
-            photo=card_data['media_file_id'],
-            caption=text,
-            reply_markup=keyboard
-        )
-    elif card_data.get('media_type') == 'video':
-        await update.message.reply_video(
-            video=card_data['media_file_id'],
-            caption=text,
-            reply_markup=keyboard
-        )
-    elif card_data.get('media_type') == 'document':
-        await update.message.reply_document(
-            document=card_data['media_file_id'],
-            caption=text,
-            reply_markup=keyboard
-        )
-
-
-async def publish_card(update: Update, context: ContextTypes.DEFAULT_TYPE, temp_id: str):
-    """Publish card to database"""
-    new_card = context.user_data.get('new_card', {})
-    
-    session = get_session()
-    try:
-        # Generate card number
-        card_number = generate_unique_card_number()
+    if data == 'nav_refresh':
+        # Refresh cards
+        user = update.effective_user
+        cards = get_cards_for_user(user.id, limit=config.CARDS_PER_PAGE)
         
-        # Create card
-        card = Card(
-            card_number=card_number,
-            groups=new_card.get('groups', []),
-            categories=new_card.get('categories', []),
-            hashtags=new_card.get('hashtags', []),
-            address=new_card.get('address'),
-            description=new_card.get('description'),
-            original_link=new_card.get('original_link'),
-            media_type=new_card.get('media_type'),
-            media_file_id=new_card.get('media_file_id')
-        )
-        
-        # Set delete time for group F cards
-        if 'F' in new_card.get('groups', []):
-            card.delete_at = datetime.utcnow() + timedelta(seconds=config.GROUP_F_DELETE_TIME)
-        
-        session.add(card)
-        session.commit()
-        
-        await update.callback_query.answer("✅ Карточка успешно опубликована!")
-        await update.callback_query.edit_message_caption(
-            caption=f"✅ Карточка #{card_number} успешно опубликована!"
-        )
-        
-        # Clear temp data
-        context.user_data.pop('new_card', None)
-        context.user_data.pop('temp_card_id', None)
-        
-    except Exception as e:
-        logger.error(f"Error publishing card: {e}")
-        await update.callback_query.answer("❌ Ошибка при публикации карточки")
-    finally:
-        session.close()
-
-
-async def say_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /say command - send message to user"""
-    if not is_admin(update.effective_user.id):
-        return
+        if cards:
+            context.user_data['current_cards'] = [card.id for card in cards]
+            context.user_data['current_card_index'] = 0
+            
+            from handlers.user_handlers import show_card
+            await show_card(update, context, 0, cards)
+        else:
+            await query.edit_message_caption(
+                caption="Нет доступных карточек. Попробуйте позже."
+            )
     
-    if len(context.args) < 2:
-        await update.message.reply_text(
-            "Использование:\n"
-            "/say <user_id> <text> - отправить сообщение по ID\n"
-            "/say @username <text> - отправить сообщение по username"
-        )
-        return
-    
-    target = context.args[0]
-    message_text = ' '.join(context.args[1:])
-    
-    try:
-        if target.startswith('@'):
-            # Send by username
-            username = target[1:]
+    elif data.startswith('nav_prev_') or data.startswith('nav_next_'):
+        # Navigate between cards
+        current_index = int(data.split('_')[-1])
+        
+        if data.startswith('nav_prev_'):
+            new_index = current_index - 1
+        else:
+            new_index = current_index + 1
+        
+        card_ids = context.user_data.get('current_cards', [])
+        
+        if 0 <= new_index < len(card_ids):
             session = get_session()
             try:
-                user = session.query(User).filter(User.username == username).first()
-                if not user:
-                    await update.message.reply_text(f"Пользователь {target} не найден")
-                    return
-                user_id = user.id
+                cards = session.query(Card).filter(Card.id.in_(card_ids)).all()
+                cards_dict = {card.id: card for card in cards}
+                ordered_cards = [cards_dict[cid] for cid in card_ids if cid in cards_dict]
+                
+                context.user_data['current_card_index'] = new_index
+                
+                from handlers.user_handlers import show_card
+                await show_card(update, context, new_index, ordered_cards)
             finally:
                 session.close()
-        else:
-            # Send by ID
-            user_id = int(target)
+
+
+async def handle_reviews(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Handle review callbacks"""
+    query = update.callback_query
+    
+    if data.startswith('rvw_add_'):
+        # Add review
+        card_id = int(data.split('_')[-1])
         
-        await context.bot.send_message(chat_id=user_id, text=message_text)
-        await update.message.reply_text(f"✅ Сообщение отправлено пользователю {target}")
+        # Check cooldown
+        user = update.effective_user
+        cooldown_expires = check_cooldown(user.id, 'review')
         
-    except Exception as e:
-        logger.error(f"Error sending message: {e}")
-        await update.message.reply_text(f"❌ Ошибка при отправке сообщения: {e}")
-
-
-async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /broadcast command - send message to all users"""
-    if not is_admin(update.effective_user.id):
-        return
-    
-    if not context.args:
-        await update.message.reply_text(
-            "Использование: /broadcast <текст сообщения>"
-        )
-        return
-    
-    message_text = ' '.join(context.args)
-    
-    session = get_session()
-    try:
-        users = session.query(User).all()
-        success_count = 0
-        fail_count = 0
-        
-        for user in users:
-            try:
-                await context.bot.send_message(chat_id=user.id, text=message_text)
-                success_count += 1
-            except Exception as e:
-                logger.error(f"Error sending to user {user.id}: {e}")
-                fail_count += 1
-        
-        await update.message.reply_text(
-            f"✅ Рассылка завершена\n"
-            f"Успешно: {success_count}\n"
-            f"Ошибок: {fail_count}"
-        )
-    finally:
-        session.close()
-
-
-async def remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /remove command - delete card by ID"""
-    if not is_admin(update.effective_user.id):
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /remove <card_id>")
-        return
-    
-    try:
-        card_id = int(context.args[0])
-        
-        session = get_session()
-        try:
-            card = session.query(Card).filter(Card.id == card_id).first()
-            if not card:
-                await update.message.reply_text(f"Карточка с ID {card_id} не найдена")
-                return
+        if cooldown_expires:
+            time_left = cooldown_expires - datetime.utcnow()
+            hours = int(time_left.total_seconds() // 3600)
+            minutes = int((time_left.total_seconds() % 3600) // 60)
             
-            card_number = card.card_number
-            session.delete(card)
-            session.commit()
-            
-            await update.message.reply_text(f"✅ Карточка #{card_number} (ID: {card_id}) удалена")
-        finally:
-            session.close()
-            
-    except ValueError:
-        await update.message.reply_text("Неверный ID карточки")
-
-
-async def removecd_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /removecd command - remove user cooldown"""
-    if not is_admin(update.effective_user.id):
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /removecd <user_id>")
-        return
-    
-    try:
-        user_id = int(context.args[0])
-        remove_cooldown(user_id)
-        await update.message.reply_text(f"✅ Кулдауны пользователя {user_id} сняты")
-    except ValueError:
-        await update.message.reply_text("Неверный ID пользователя")
-
-
-async def cardstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /cardstats command - show card statistics"""
-    if not is_admin(update.effective_user.id):
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /cardstats <card_id>")
-        return
-    
-    try:
-        card_id = int(context.args[0])
-        
-        session = get_session()
-        try:
-            card = session.query(Card).filter(Card.id == card_id).first()
-            if not card:
-                await update.message.reply_text(f"Карточка с ID {card_id} не найдена")
-                return
-            
-            avg_rating, rating_count = get_card_rating(card_id)
-            review_count = get_card_reviews_count(card_id)
-            
-            text = f"📊 Статистика карточки #{card.card_number} (ID: {card_id})\n\n"
-            text += f"Группы: {', '.join(card.groups)}\n"
-            text += f"⭐️ Рейтинг: {avg_rating} ({rating_count} оценок)\n"
-            text += f"💬 Отзывы: {review_count}\n"
-            text += f"👁 Просмотры: {card.total_views} (уникальных: {card.unique_views})\n"
-            text += f"🔗 Переходы по ссылке: {card.link_clicks}\n"
-            
-            # Send to admin group
-            await context.bot.send_message(
-                chat_id=config.ADMIN_GROUP_ID,
-                text=text
+            await query.answer(
+                f"⏳ Вы можете оставить следующий отзыв через {hours}ч {minutes}мин",
+                show_alert=True
             )
-            
-            await update.message.reply_text("✅ Статистика отправлена в админ-группу")
-        finally:
-            session.close()
-            
-    except ValueError:
-        await update.message.reply_text("Неверный ID карточки")
-
-
-async def statsf_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /statsf command - show group F cards statistics"""
-    if not is_admin(update.effective_user.id):
-        return
-    
-    session = get_session()
-    try:
-        # Get all cards in group F
-        cards = session.query(Card).all()
-        f_cards = [card for card in cards if 'F' in card.groups]
+            return
         
-        text = f"📊 Статистика группы F\n"
-        text += f"Всего карточек: {len(f_cards)}\n\n"
-        
-        for card in f_cards:
-            if card.delete_at:
-                time_left = card.delete_at - datetime.utcnow()
-                hours = int(time_left.total_seconds() // 3600)
-                minutes = int((time_left.total_seconds() % 3600) // 60)
-                countdown = f"{hours}ч {minutes}мин"
-            else:
-                countdown = "Не установлено"
-            
-            text += f"ID: {card.id}, Номер: {card.card_number}\n"
-            text += f"До удаления: {countdown}\n\n"
-        
-        # Send to admin group
-        await context.bot.send_message(
-            chat_id=config.ADMIN_GROUP_ID,
-            text=text if text else "Нет карточек в группе F"
+        context.user_data['review_card_id'] = card_id
+        await query.message.reply_text(
+            "📝 Напишите свой отзыв о карточке:\n\n"
+            "(Используйте команду /cancel для отмены)"
         )
-        
-        await update.message.reply_text("✅ Статистика отправлена в админ-группу")
-    finally:
-        session.close()
-
-
-async def reviewdelete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /reviewdelete command - delete review"""
-    if not is_admin(update.effective_user.id):
-        return
     
-    if not context.args:
-        await update.message.reply_text("Использование: /reviewdelete <review_id>")
-        return
-    
-    try:
-        review_id = int(context.args[0])
+    elif data.startswith('rvw_stats_'):
+        # Show review statistics
+        card_id = int(data.split('_')[-1])
         
         session = get_session()
         try:
-            review = session.query(Review).filter(Review.id == review_id).first()
-            if not review:
-                await update.message.reply_text(f"Отзыв с ID {review_id} не найден")
-                return
+            reviews = session.query(Review).filter(Review.card_id == card_id).all()
+            avg_rating, rating_count = get_card_rating(card_id)
             
-            session.delete(review)
-            session.commit()
+            text = f"📊 Статистика отзывов\n\n"
+            text += f"⭐️ Средний рейтинг: {avg_rating} ({rating_count} оценок)\n"
+            text += f"💬 Всего отзывов: {len(reviews)}\n\n"
             
-            await update.message.reply_text(f"✅ Отзыв ID {review_id} удалён")
+            if reviews:
+                text += "Последние отзывы:\n"
+                for review in reviews[-5:]:  # Last 5 reviews
+                    text += f"• {review.text[:100]}...\n"
+            
+            await query.edit_message_caption(
+                caption=text,
+                reply_markup=get_review_keyboard(card_id)
+            )
         finally:
             session.close()
-            
-    except ValueError:
-        await update.message.reply_text("Неверный ID отзыва")
-
-
-async def statscoldown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /statscoldown command - show users with active cooldown"""
-    if not is_admin(update.effective_user.id):
-        return
     
-    session = get_session()
-    try:
-        cooldowns = session.query(Cooldown).filter(
-            Cooldown.expires_at > datetime.utcnow()
-        ).all()
-        
-        text = "📊 Пользователи с активным кулдауном:\n\n"
-        
-        if not cooldowns:
-            text = "Нет пользователей с активным кулдауном"
-        else:
-            for cd in cooldowns:
-                user = session.query(User).filter(User.id == cd.user_id).first()
-                username = f"@{user.username}" if user and user.username else f"ID: {cd.user_id}"
-                
-                time_left = cd.expires_at - datetime.utcnow()
-                hours = int(time_left.total_seconds() // 3600)
-                minutes = int((time_left.total_seconds() % 3600) // 60)
-                
-                text += f"{username}\n"
-                text += f"Тип: {cd.cooldown_type}\n"
-                text += f"Осталось: {hours}ч {minutes}мин\n\n"
-        
-        # Send to admin group
-        await context.bot.send_message(
-            chat_id=config.ADMIN_GROUP_ID,
-            text=text
-        )
-        
-        await update.message.reply_text("✅ Статистика отправлена в админ-группу")
-    finally:
-        session.close()
-
-
-async def statsgroups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /statsgroups command - show cards count in each group"""
-    if not is_admin(update.effective_user.id):
-        return
-    
-    session = get_session()
-    try:
-        all_cards = session.query(Card).all()
-        
-        group_counts = {group: 0 for group in config.CARD_GROUPS}
-        
-        for card in all_cards:
-            for group in card.groups:
-                if group in group_counts:
-                    group_counts[group] += 1
-        
-        text = "📊 Количество карточек в каждой группе:\n\n"
-        
-        for group in config.CARD_GROUPS:
-            text += f"Группа {group}: {group_counts[group]} карточек\n"
-        
-        text += f"\nВсего карточек: {len(all_cards)}"
-        
-        # Send to admin group
-        await context.bot.send_message(
-            chat_id=config.ADMIN_GROUP_ID,
-            text=text
-        )
-        
-        await update.message.reply_text("✅ Статистика отправлена в админ-группу")
-    finally:
-        session.close()
-
-
-async def cardgroupedit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /cardgroupedit command - edit card groups"""
-    if not is_admin(update.effective_user.id):
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Использование: /cardgroupedit <card_id>")
-        return
-    
-    try:
-        card_id = int(context.args[0])
+    elif data.startswith('rvw_back_'):
+        # Back to card
+        card_id = int(data.split('_')[-1])
         
         session = get_session()
         try:
             card = session.query(Card).filter(Card.id == card_id).first()
-            if not card:
-                await update.message.reply_text(f"Карточка с ID {card_id} не найдена")
-                return
+            if card:
+                card_text = format_card_text(card)
+                from keyboards.keyboards import get_card_keyboard
+                keyboard = get_card_keyboard(card)
+                
+                await query.edit_message_caption(
+                    caption=card_text,
+                    reply_markup=keyboard
+                )
+        finally:
+            session.close()
+    
+    elif data.startswith('rvw_'):
+        # Show reviews
+        card_id = int(data.split('_')[1])
+        keyboard = get_review_keyboard(card_id)
+        
+        await query.edit_message_caption(
+            caption="⭐️ Отзывы и оценки\n\nВыберите действие:",
+            reply_markup=keyboard
+        )
+
+
+async def handle_rating(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Handle rating callbacks"""
+    query = update.callback_query
+    
+    if data.startswith('rt_show_'):
+        # Show rating keyboard
+        card_id = int(data.split('_')[-1])
+        keyboard = get_rating_keyboard(card_id)
+        
+        await query.edit_message_caption(
+            caption="⭐️ Оцените карточку от 1 до 5 звёзд:",
+            reply_markup=keyboard
+        )
+    
+    elif data.startswith('rt_vote_'):
+        # Vote
+        parts = data.split('_')
+        card_id = int(parts[2])
+        rating_value = int(parts[3])
+        
+        user = update.effective_user
+        
+        session = get_session()
+        try:
+            # Check if already rated
+            existing = session.query(Rating).filter(
+                Rating.user_id == user.id,
+                Rating.card_id == card_id
+            ).first()
             
-            # Store card ID in context for callback
-            context.user_data['edit_card_id'] = card_id
-            context.user_data['edit_card_groups'] = card.groups.copy()
+            if existing:
+                existing.rating = rating_value
+            else:
+                rating = Rating(
+                    user_id=user.id,
+                    card_id=card_id,
+                    rating=rating_value
+                )
+                session.add(rating)
             
-            from keyboards.keyboards import get_group_selection_keyboard
-            keyboard = get_group_selection_keyboard(card.groups)
+            session.commit()
             
-            await update.message.reply_text(
-                f"Редактирование групп карточки #{card.card_number}\n"
-                f"Текущие группы: {', '.join(card.groups)}\n\n"
-                "Выберите новые группы:",
+            await query.answer(f"✅ Вы поставили оценку: {'⭐️' * rating_value}")
+            
+            # Show updated reviews menu
+            keyboard = get_review_keyboard(card_id)
+            await query.edit_message_caption(
+                caption="✅ Спасибо за вашу оценку!\n\n⭐️ Отзывы и оценки",
                 reply_markup=keyboard
             )
         finally:
             session.close()
-            
-    except ValueError:
-        await update.message.reply_text("Неверный ID карточки")
 
 
-async def edit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /edit command - edit card"""
-    if not is_admin(update.effective_user.id):
-        return
+async def handle_subscriptions(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Handle subscription callbacks"""
+    query = update.callback_query
     
-    if not context.args:
-        await update.message.reply_text("Использование: /edit <card_id>")
-        return
+    if data == 'my_subs' or data == 'subs_back':
+        # Show subscriptions menu
+        keyboard = get_subscriptions_keyboard()
+        await query.edit_message_caption(
+            caption="🔔 Подписки\n\nВыберите тип подписок:",
+            reply_markup=keyboard
+        )
     
-    await update.message.reply_text("⚠️ Функция редактирования в разработке")
-
-
-async def changenumber_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /changenumber command - change card number"""
-    if not is_admin(update.effective_user.id):
-        return
-    
-    if len(context.args) < 2:
-        await update.message.reply_text("Использование: /changenumber <old_number> <new_number>")
-        return
-    
-    try:
-        old_number = int(context.args[0])
-        new_number = int(context.args[1])
-        
-        if new_number < 1 or new_number > 9999:
-            await update.message.reply_text("Новый номер должен быть от 1 до 9999")
-            return
+    elif data == 'subs_cats':
+        # Show category subscriptions
+        user = update.effective_user
         
         session = get_session()
         try:
-            # Find card with old number
-            old_card = session.query(Card).filter(Card.card_number == old_number).first()
-            if not old_card:
-                await update.message.reply_text(f"Карточка с номером {old_number} не найдена")
-                return
+            subs = session.query(CategorySubscription).filter(
+                CategorySubscription.user_id == user.id
+            ).all()
             
-            # Check if new number exists
-            new_card = session.query(Card).filter(Card.card_number == new_number).first()
-            if new_card:
-                await update.message.reply_text(f"Номер {new_number} уже используется")
-                return
+            text = "📂 Подписки на категории:\n\n"
             
-            # Update number
-            old_card.card_number = new_number
-            session.commit()
+            if subs:
+                for sub in subs:
+                    text += f"• {sub.category}\n"
+            else:
+                text += "У вас нет подписок на категории.\n"
             
-            await update.message.reply_text(
-                f"✅ Номер карточки изменён: {old_number} → {new_number}"
+            text += "\nИспользуйте команды:\n"
+            text += "/follow <категория> - подписаться\n"
+            text += "/unfollow <категория> - отписаться"
+            
+            await query.edit_message_caption(
+                caption=text,
+                reply_markup=get_subscriptions_keyboard()
             )
         finally:
             session.close()
+    
+    elif data == 'subs_cards':
+        # Show card subscriptions
+        user = update.effective_user
+        
+        session = get_session()
+        try:
+            subs = session.query(CardSubscription).filter(
+                CardSubscription.user_id == user.id
+            ).all()
             
-    except ValueError:
-        await update.message.reply_text("Неверный формат номеров")
+            text = "🃏 Подписки на карточки:\n\n"
+            
+            if subs:
+                for sub in subs:
+                    card = session.query(Card).filter(Card.id == sub.card_id).first()
+                    if card:
+                        text += f"• Карточка #{card.card_number}\n"
+            else:
+                text += "У вас нет подписок на карточки.\n"
+            
+            text += "\nИспользуйте команду:\n"
+            text += "/followid <номер> - подписаться на карточку"
+            
+            await query.edit_message_caption(
+                caption=text,
+                reply_markup=get_subscriptions_keyboard()
+            )
+        finally:
+            session.close()
+
+
+async def handle_text_form(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Handle text form callbacks"""
+    query = update.callback_query
+    
+    if data == 'text_form':
+        keyboard = get_text_form_keyboard()
+        await query.message.reply_text(
+            "📝 Выберите тип формы:",
+            reply_markup=keyboard
+        )
+    
+    elif data.startswith('txtf_'):
+        parts = data.split('_')
+        action = parts[1]
+        
+        if action in ['catalog', 'post', 'admin', 'report', 'search']:
+            # Start form
+            context.user_data['text_form_type'] = action
+            
+            form_names = {
+                'catalog': 'Заявка в каталог',
+                'post': 'Предложение публикации',
+                'admin': 'Связь с администратором',
+                'report': 'Жалоба на пользователя',
+                'search': 'Форма «Ищу»'
+            }
+            
+            await query.message.reply_text(
+                f"📝 {form_names[action]}\n\n"
+                "Напишите ваше сообщение и при необходимости прикрепите медиа:"
+            )
+        
+        elif action == 'send':
+            # Send form to moderation
+            form_type = parts[2] if len(parts) > 2 else context.user_data.get('text_form_type')
+            
+            message_text = context.user_data.get('text_form_message', '')
+            media_type = context.user_data.get('text_form_media_type')
+            media_id = context.user_data.get('text_form_media_id')
+            
+            user = query.from_user
+            
+            form_names = {
+                'catalog': 'Заявка в каталог',
+                'post': 'Предложение публикации',
+                'admin': 'Связь с администратором',
+                'report': 'Жалоба на пользователя',
+                'search': 'Форма «Ищу»'
+            }
+            
+            # Create message for admin group
+            admin_text = f"📬 {form_names.get(form_type, 'Новая форма')}\n\n"
+            admin_text += f"От: {user.first_name}"
+            if user.username:
+                admin_text += f" (@{user.username})"
+            admin_text += f"\nID: {user.id}\n\n"
+            admin_text += message_text
+            
+            # Send to moderation group
+            try:
+                if media_type and media_id:
+                    if media_type == 'photo':
+                        await context.bot.send_photo(
+                            chat_id=config.MODERATION_GROUP_ID,
+                            photo=media_id,
+                            caption=admin_text
+                        )
+                    elif media_type == 'video':
+                        await context.bot.send_video(
+                            chat_id=config.MODERATION_GROUP_ID,
+                            video=media_id,
+                            caption=admin_text
+                        )
+                    elif media_type == 'document':
+                        await context.bot.send_document(
+                            chat_id=config.MODERATION_GROUP_ID,
+                            document=media_id,
+                            caption=admin_text
+                        )
+                else:
+                    await context.bot.send_message(
+                        chat_id=config.MODERATION_GROUP_ID,
+                        text=admin_text
+                    )
+                
+                # Set cooldown
+                from utils.helpers import set_cooldown
+                set_cooldown(user.id, 'text_command', config.COOLDOWN_TEXT_COMMAND)
+                
+                await query.edit_message_text(
+                    "✅ Ваша заявка отправлена администратору!\n"
+                    "Кулдаун: 8 часов до следующей заявки."
+                )
+                
+                # Clear context
+                context.user_data.pop('text_form_type', None)
+                context.user_data.pop('text_form_message', None)
+                context.user_data.pop('text_form_media_type', None)
+                context.user_data.pop('text_form_media_id', None)
+                
+            except Exception as e:
+                logger.error(f"Error sending form to moderation: {e}")
+                await query.answer("❌ Ошибка при отправке формы", show_alert=True)
+        
+        elif action == 'edit':
+            # Edit form
+            await query.message.reply_text(
+                "✏️ Отправьте новое сообщение для редактирования:"
+            )
+        
+        elif action == 'del':
+            # Delete form
+            context.user_data.pop('text_form_type', None)
+            context.user_data.pop('text_form_message', None)
+            context.user_data.pop('text_form_media_type', None)
+            context.user_data.pop('text_form_media_id', None)
+            
+            await query.edit_message_text("🗑 Форма удалена")
+
+
+async def handle_category_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Handle category selection callbacks"""
+    query = update.callback_query
+    
+    if data.startswith('cat_sel_'):
+        # Toggle category
+        category = data.replace('cat_sel_', '')
+        
+        new_card = context.user_data.get('new_card', {})
+        categories = new_card.get('categories', [])
+        
+        if category in categories:
+            categories.remove(category)
+        else:
+            if len(categories) < 3:
+                categories.append(category)
+            else:
+                await query.answer("Максимум 3 категории", show_alert=True)
+                return
+        
+        new_card['categories'] = categories
+        context.user_data['new_card'] = new_card
+        
+        keyboard = get_category_selection_keyboard(categories)
+        await query.edit_message_reply_markup(reply_markup=keyboard)
+    
+    elif data == 'cat_done':
+        # Finish category selection
+        new_card = context.user_data.get('new_card', {})
+        categories = new_card.get('categories', [])
+        
+        if not categories:
+            await query.answer("Выберите хотя бы одну категорию", show_alert=True)
+            return WAITING_CATEGORIES
+        
+        await query.message.reply_text(
+            f"✅ Выбрано категорий: {len(categories)}\n\n"
+            "Шаг 3/6: Введите 1-3 хештега (через пробел):"
+        )
+        
+        return WAITING_HASHTAGS
+
+
+async def handle_group_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Handle group selection callbacks"""
+    query = update.callback_query
+    
+    if data.startswith('grp_sel_'):
+        # Toggle group
+        group = data.replace('grp_sel_', '')
+        
+        new_card = context.user_data.get('new_card', {})
+        groups = new_card.get('groups', [])
+        
+        if group in groups:
+            groups.remove(group)
+        else:
+            if len(groups) < 3:
+                groups.append(group)
+            else:
+                await query.answer("Максимум 3 группы", show_alert=True)
+                return
+        
+        new_card['groups'] = groups
+        context.user_data['new_card'] = new_card
+        
+        keyboard = get_group_selection_keyboard(groups)
+        await query.edit_message_reply_markup(reply_markup=keyboard)
+    
+    elif data == 'grp_done':
+        # Finish group selection
+        new_card = context.user_data.get('new_card', {})
+        groups = new_card.get('groups', [])
+        
+        if not groups:
+            await query.answer("Выберите хотя бы одну группу", show_alert=True)
+            return
+        
+        await query.message.reply_text(
+            f"✅ Выбрано групп: {len(groups)}\n\n"
+            "Шаг 1/6: Отправьте ссылку на оригинальный пост:"
+        )
+        
+        return WAITING_LINK
+
+
+async def handle_admin_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    """Handle admin callbacks"""
+    query = update.callback_query
+    
+    if not query.from_user.id in config.ADMIN_IDS:
+        await query.answer("У вас нет доступа", show_alert=True)
+        return
+    
+    if data.startswith('adm_pub_'):
+        # Publish card
+        temp_id = data.replace('adm_pub_', '')
+        await publish_card(update, context, temp_id)
+    
+    elif data.startswith('adm_del_'):
+        # Delete card preview
+        await query.edit_message_caption(
+            caption="🗑 Карточка удалена"
+        )
+        context.user_data.pop('new_card', None)
+        context.user_data.pop('temp_card_id', None)
+    
+    elif data.startswith('adm_edit_'):
+        # Edit card
+        await query.answer("Редактирование пока недоступно", show_alert=True)
