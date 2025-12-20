@@ -29,7 +29,8 @@ def is_admin(user_id: int) -> bool:
 async def addcatalog_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /addcatalog command - add card to group A"""
     if not is_admin(update.effective_user.id):
-        return
+        await update.message.reply_text("❌ У вас нет доступа к этой команде")
+        return ConversationHandler.END
     
     context.user_data['new_card'] = {'groups': ['A']}
     
