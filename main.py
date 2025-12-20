@@ -30,7 +30,7 @@ from handlers.admin_handlers import (
     reviewdelete_command, statscoldown_command, statsgroups_command,
     cardgroupedit_command, changenumber_command,
     WAITING_LINK, WAITING_CATEGORIES, WAITING_HASHTAGS,
-    WAITING_ADDRESS, WAITING_DESCRIPTION, WAITING_MEDIA
+    WAITING_ADDRESS, WAITING_DESCRIPTION, WAITING_MEDIA, WAITING_GROUP_SELECTION
 )
 from handlers.callback_handlers import handle_callback
 
@@ -252,7 +252,9 @@ def main():
             CommandHandler('addcard', addcard_command),
         ],
         states={
+            WAITING_GROUP_SELECTION: [CallbackQueryHandler(handle_callback, pattern='^grp_')],
             WAITING_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_link)],
+            WAITING_CATEGORIES: [CallbackQueryHandler(handle_callback, pattern='^cat_')],
             WAITING_HASHTAGS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_hashtags)],
             WAITING_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_address)],
             WAITING_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_description)],
